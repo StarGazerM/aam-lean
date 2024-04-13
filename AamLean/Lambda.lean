@@ -35,13 +35,13 @@ notation "Env" => List (Var × Addr)
 --   | [] => none
 --   | (y, a) :: rest => if x = y then some a else elookup x rest
 @[aesop safe [constructors, cases]]
-inductive elookup : Var → Env → Option Addr -> Prop where
-  | elookup_nil : ∀ {x}, elookup x [] none
-  | elookup_hit : ∀ {x a rest}, elookup x ((x, a) :: rest) (some a)
+inductive env_lookup : Var → Env → Option Addr -> Prop where
+  | elookup_nil : ∀ {x}, env_lookup x [] none
+  | elookup_hit : ∀ {x a rest}, env_lookup x ((x, a) :: rest) (some a)
   | elookup_rest : ∀ {x y a a' rest},
       x ≠ y →
-      elookup x rest a' ->
-      elookup x ((y, a) :: rest) a'
+      env_lookup x rest a' ->
+      env_lookup x ((y, a) :: rest) a'
 @[aesop safe [constructors, cases]]
 inductive env_update : Var → Addr → Env → Env → Prop where
   | env_update_nil : ∀ {x a},
@@ -54,23 +54,23 @@ inductive env_update : Var → Addr → Env → Env → Prop where
     env_update x a ((y, a') :: rest) ((y, a') :: rest')
 
 -- some lemma about map lookup
-theorem apply_env_empty : ∀ {x}, elookup x [] none := by aesop
+theorem apply_env_empty : ∀ {x}, env_lookup x [] none := by aesop
 theorem update_env_eq : ∀ {x a ρ ρ'},
   env_update x a ρ ρ' ->
-  elookup x ρ' (some a) := by
+  env_lookup x ρ' (some a) := by
   intro x a ρ ρ' h
   induction h
-  . apply elookup.elookup_hit
-  . apply elookup.elookup_hit
-  . apply elookup.elookup_rest
+  . apply env_lookup.elookup_hit
+  . apply env_lookup.elookup_hit
+  . apply env_lookup.elookup_rest
     . assumption
     . assumption
 theorem update_env_neq : ∀ {x y a ρ},
   x ≠ y →
-  elookup x ρ v →
-  elookup x ((y, a) :: ρ) v := by
+  env_lookup x ρ v →
+  env_lookup x ((y, a) :: ρ) v := by
   intros x y a ρ h₁ h₂
-  apply elookup.elookup_rest
+  apply env_lookup.elookup_rest
   assumption
   assumption
 theorem update_env_shadow : ∀ {x a ρ ρ' ρ''},
@@ -91,6 +91,7 @@ inductive Kont : Type where
   | ar : Expr → Env → Addr → Kont
   | fn : Expr → Env → Addr → Kont
 
+-- TODO: use Beq and generic AssocList for map
 -- Store is a map of address to value
 notation "VStore" => List (Addr × Value)
 -- def slookup (x: Addr) : VStore → Option Value
@@ -167,14 +168,15 @@ inductive inject : Expr → Σ → Prop where
 --   match elookup x e with
 --   | some a => value_lookup a s
 --   | none => none
-inductive aeval : Var → Env → Store → Option Value → Prop where
-  | aeval_hit : ∀ {x a v e s},
-      elookup x e (some a) → slookup a s (some v) →
-      aeval x e (s, _) (some v)
-  | aeval_var_miss : ∀ {x e s}, elookup x e none → aeval x e s none
-  | aeval_addr_miss : ∀ {x a e s},
-      elookup x e (some a) →
-      slookup a s none → aeval x e (s, _) none
+inductive aeval : Var → Env → VStore → Option Value → Prop where
+  | aeval_hit : ∀ {x α v ρ σ},
+      env_lookup x ρ (some α) →
+      vs_lookup α s (some v) →
+      aeval x ρ σ (some v)
+  | aeval_var_miss : ∀ {x e s}, env_lookup x e none → aeval x e s none
+  | aeval_addr_miss : ∀ {x α ρ σ},
+      env_lookup x ρ (some α) →
+      ks_lookup α s none → aeval x e σ none
 
 -- def lambda_huh (v: Expr) : Bool :=
 --   match v with
@@ -185,26 +187,31 @@ inductive lambda_huh : Expr → Prop where
 
 -- the small step semantics of the lambda calculus
 inductive Eval : Σ → Σ → Prop where
-  | eval_ref : ∀ {x ρ σ a t},
+  | eval_ref : ∀ {x ρ σᵥ σₖ a t},
     aeval x ρ σ (some (col v ρ')) →
-    Eval (ref x, ρ, σ, a, t) (v, ρ', σ, a, t)
-  | eval_app : ∀ {e₁ e₂ ρ σ a t},
-    Alloc (app e₁ e₂, ρ, σ, a, t) b →
-    Tick (app e₁ e₂, ρ, σ, a, t) u →
-    Eval (app e₁ e₂, ρ, σ, a, t)
-         (e₁, ρ, (kont_extend b (ar e₁ ρ a) σ), b, u)
-  | eval_v_ar : ∀ {v ρ σ a t},
+    Eval (ref x, ρ, σᵥ, σₛ, a, t) (v, ρ', σᵥ, σₛ, a, t)
+  | eval_app : ∀ {e₁ e₂ ρ σᵥ σₖ a t σₖ'},
+    Alloc (app e₁ e₂, ρ, σᵥ, σₖ, a, t) b →
+    Tick (app e₁ e₂, ρ, σᵥ, σₖ, a, t) u →
+    ks_update b (ar e₁ ρ a) σₖ σₖ' →
+    Eval (app e₁ e₂, ρ, σᵥ, σₖ, a, t)
+         (e₁, ρ, σᵥ, σₖ, b, u)
+  | eval_v_ar : ∀ {v ρ σᵥ σₖ a t σₖ'},
     lambda_huh v →
-    Alloc (v, ρ, σ, a, t) b →
-    Tick (v, ρ, σ, a, t) u →
-    kont_lookup a σ (some (ar e ρ c)) →
-    Eval (v, ρ, σ, a, t) (e, ρ, (kont_extend c (fn v ρ c) σ), b, u)
-  | eval_v_fn : ∀ {v ρ σ a t},
+    Alloc (v, ρ, σᵥ, σₖ, a, t) b →
+    Tick (v, ρ, σᵥ, σₖ, a, t) u →
+    ks_lookup a σₖ (some (ar e ρ c)) →
+    ks_update b (fn v ρ c) σₖ σₖ' →
+    Eval (v, ρ, σᵥ, σₖ, a, t) (e, ρ, σᵥ, σₖ', b, u)
+  | eval_v_fn : ∀ {v ρ σᵥ σₖ a t ρ' ρ'' σₖ'},
     lambda_huh v →
-    Alloc (v, ρ, σ, a, t) b →
-    Tick (v, ρ, σ, a, t) u →
-    kont_lookup a σ (some (fn (lam x e) ρ' c)) →
-    Eval (v, ρ, σ, a, t) (e, env_extend x b ρ', (kont_extend b (fn v ρ a) σ), b, u)
+    Alloc (v, ρ, σᵥ, σₖ, a, t) b →
+    Tick (v, ρ, σᵥ, σₖ, a, t) u →
+    ks_lookup a σₖ (some (fn (lam x e) ρ' c)) →
+    env_update x b ρ' ρ'' →
+    ks_update b (fn v ρ a) σₖ σₖ' →
+    Eval (v, ρ, σᵥ, σₖ, a, t)
+         (e, ρ'', σᵥ, σₖ', b, u)
 
 -- define the reflexive transitive closure of the small step semantics
 inductive EvalReach : Σ → Σ → Prop where
@@ -217,19 +224,10 @@ inductive EvalReach : Σ → Σ → Prop where
 -- define halting state
 -- halting state is we get a lambda expression and mt in the continuation store
 inductive Halting : Σ → Prop where
-  | halt : ∀ {v ρ σ a t},
+  | halt : ∀ {v ρ σᵥ σₖ a t},
     lambda_huh v →
-    kont_lookup a σ (some mt) →
-    Halting (v, ρ, σ, a, t)
-
-theorem kstore_lookup_determinism : ∀ {x σ v v'},
-  slookup x σ v → slookup x σ v' → v = v' := by
-  intros x σ v v' h₁ h₂
-  induction h₁
-  induction h₂
-  .
-
-
+    ks_lookup a σₖ (some mt) →
+    Halting (v, ρ, σᵥ, σₖ, a, t)
 
 
 -- prove determinism for aeval
@@ -243,8 +241,6 @@ theorem aeval_determinism : ∀ {x e s v v'},
   induction h₁ generalizing v'
   case aeval_hit x a v e s h₁ h₂ =>
 
-
-
 -- proof of determinism
 -- theorem determinism_proof : determinism := by
 --   intro s s₁ s₂ h₁ h₂
@@ -252,10 +248,6 @@ theorem aeval_determinism : ∀ {x e s v v'},
 --   case eval_ref x ρ σ a t aeval₁ =>
 --     cases h₂
 --     .
-
-
-
-
 
 
 
